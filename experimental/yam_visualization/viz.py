@@ -9,6 +9,7 @@ import viser
 import viser.extras
 import yourdfpy
 from flask import Flask, request, jsonify
+import time
 
 NUM_JOINTS = 6
 
@@ -101,6 +102,7 @@ def main():
         urdf_vis_left.update_cfg(np.flip(joints_left))
         urdf_vis_right.update_cfg(np.flip(joints_right))
         server.flush()
+        time.sleep(0.02)
 
 if __name__ == '__main__':
     main()
