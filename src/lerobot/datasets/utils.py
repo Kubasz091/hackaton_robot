@@ -721,8 +721,13 @@ def dataset_to_policy_features(features: dict[str, dict]) -> dict[str, PolicyFea
                 raise ValueError(f"Number of dimensions of {key} != 3 (shape={shape})")
 
             names = ft["names"]
+            
+            # Handle case where names is a dict (e.g. {"height": 480, ...})
+            if isinstance(names, dict):
+                names = list(names.keys())
+
             # Backward compatibility for "channel" which is an error introduced in LeRobotDataset v2.0 for ported datasets.
-            if names[2] in ["channel", "channels"]:  # (h, w, c) -> (c, h, w)
+            if len(names) > 2 and names[2] in ["channel", "channels"]:  # (h, w, c) -> (c, h, w)
                 shape = (shape[2], shape[0], shape[1])
         elif key == OBS_ENV_STATE:
             type = FeatureType.ENV
