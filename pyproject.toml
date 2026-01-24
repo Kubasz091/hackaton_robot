@@ -138,7 +138,7 @@ torch-asus = [
 ]
 yam = [
     "numpy >= 2.2.6",
-    "i2rt @ git+ssh://git@github.com/lute-corp/i2rt.git@main"
+    "i2rt @ file:///home/hacker/lerobot_hackathon/robots_realtime/dependencies/i2rt"
 ]
 
 
