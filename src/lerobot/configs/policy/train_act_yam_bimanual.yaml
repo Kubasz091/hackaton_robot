@@ -1,0 +1,98 @@
+# Draccus configuration for YAM bimanual policy (ACT)
+
+dataset:
+  repo_id: /common/yam_wire
+  episodes: null
+  root: null
+  video_backend: pyav
+
+# env: null
+
+policy:
+  type: act
+  push_to_hub: false
+  
+  # Input Features
+  input_features:
+    observation.images.top:
+      type: VISUAL
+      shape: [3, 480, 640]
+    observation.images.wrist_left:
+      type: VISUAL
+      shape: [3, 480, 640]
+    observation.images.wrist_right:
+      type: VISUAL
+      shape: [3, 480, 640]
+    observation.state:
+      type: STATE
+      shape: [14]
+
+  # Output Features
+  output_features:
+    action:
+      type: ACTION
+      shape: [14]
+
+  # Architecture structure
+  n_obs_steps: 1
+  chunk_size: 100
+  n_action_steps: 100
+  
+  # Vision backbone
+  vision_backbone: resnet18
+  pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1
+  replace_final_stride_with_dilation: false
+  
+  # Transformer
+  pre_norm: false
+  dim_model: 512
+  n_heads: 8
+  dim_feedforward: 3200
+  feedforward_activation: relu
+  n_encoder_layers: 4
+  n_decoder_layers: 1
+  
+  # VAE
+  use_vae: true
+  latent_dim: 32
+  n_vae_encoder_layers: 4
+  
+  # Training
+  dropout: 0.1
+  kl_weight: 10.0
+  optimizer_lr: 1e-5
+  optimizer_weight_decay: 1e-4
+
+output_dir: outputs/train/act_yam_bimanual
+job_name: act_yam_bimanual
+
+# Training params
+steps: 500
+batch_size: 32
+num_workers: 4
+save_freq: 5000
+log_freq: 100
+eval_freq: 10000
+save_checkpoint: true
+
+optimizer:
+  type: adamw
+  lr: 1e-5
+  weight_decay: 1e-4
+
+scheduler:
+  type: cosine_decay_with_warmup
+  num_warmup_steps: 1000
+  peak_lr: 1e-5
+  decay_lr: 1e-6
+  num_decay_steps: 99000
+
+eval:
+  n_episodes: 50
+  batch_size: 50
+  use_async_envs: false
+
+# wandb:
+#   enable: true
+#   project: lerobot
+#   disable_artifact: false
