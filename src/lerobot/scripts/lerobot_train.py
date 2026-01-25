@@ -393,6 +393,18 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     if cfg.resume:
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
+        # FORCE UPDATE LR FROM CONFIG because load_training_state overwrites it with checkpoint state
+        if cfg.optimizer and cfg.optimizer.lr:
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = cfg.optimizer.lr
+            
+            # Also update scheduler base_lrs if it exists, otherwise it will overwrite the optimizer LR
+            if lr_scheduler is not None:
+                for i, _ in enumerate(lr_scheduler.base_lrs):
+                    lr_scheduler.base_lrs[i] = cfg.optimizer.lr
+            
+            if is_main_process:
+                logging.info(f"Resumed training: Overwrote optimizer LR with config value: {cfg.optimizer.lr}")
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())

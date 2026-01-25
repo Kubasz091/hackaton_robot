@@ -31,6 +31,7 @@ import time
 from concurrent import futures
 from dataclasses import asdict
 from pprint import pformat
+from collections import deque
 from queue import Empty, Queue
 from typing import Any
 
@@ -105,7 +106,8 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         # only running inference on the latest observation received by the server
         self.shutdown_event.set()
         self.observation_queue = Queue(maxsize=1)
-
+        self.action_buffer = deque(maxlen=4)  # For temporal ensembling
+        
         with self._predicted_timesteps_lock:
             self._predicted_timesteps = set()
             
@@ -217,6 +219,61 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
         return services_pb2.Empty()
 
+    def _temporal_ensemble_actions(self, window_size: int = 4) -> torch.Tensor:
+        """
+        Averages the overlapping action chunks stored in self.action_buffer.
+        
+        Algorithm:
+        1. We have a buffer of up to `window_size` previous action chunks.
+           Each chunk covers timesteps [t, t+horizon].
+        2. We want to produce the averaged action for the *current* execution window.
+           The 'latest' chunk in the buffer corresponds to the current inference at time t.
+        3. Simple approach:
+           - Align all chunks in time.
+           - Average the predictions for the steps that we are about to execute.
+           
+        However, the simple "average overlapping parts" is complex because we just want the *next* k actions.
+        Each chunk starts at a different timestep.
+        
+        Assumption: The client requests actions sequentially.
+        If we just predicted for t=100 (horizon 64), we have actions for 100..163.
+        Previous prediction was at t=92 (if interval=8), covering 92..155.
+        
+        To simplify, we will just average the *first* `actions_per_chunk` actions of the *latest* chunk 
+        with the corresponding actions from previous chunks.
+        
+        Let's say actions_per_chunk = 8.
+        - Chunk 0 (latest): Starts at T. Action[0] is for T.
+        - Chunk 1 (prev): Starts at T-8. Action[8] is for T.
+        - Chunk 2 (prev): Starts at T-16. Action[16] is for T.
+        
+        We need to average:
+        Output[i] = Mean(Chunk_0[i], Chunk_1[i+8], Chunk_2[i+16], ...)
+        for i in range(actions_per_chunk).
+        """
+        if not self.action_buffer:
+            return None
+            
+        latest_chunk = self.action_buffer[-1] # Shape (Horizon, ActionDim)
+        
+        # We only need to return 'actions_per_chunk' steps.
+        # Initialize accumulator for these steps.
+        # Note: latest_chunk might have batch dim if not careful, but _predict_action_chunk returns list[TimedAction]
+        # Wait, _predict_action_chunk returns list[TimedAction], which is already timed! 
+        # But here we are intercepting INSIDE _predict_action_chunk or GetActions? 
+        # The prompt plan said "Modify _predict_action_chunk".
+        # But _predict_action_chunk returns TimedAction list.
+        # Let's adjust where we do this. 
+        # Ideally, we do this on Tensors before converting to TimedAction.
+        
+        # Let's look at _predict_action_chunk. It calls self._get_action_chunk(observation).
+        # self._get_action_chunk returns a Tensor (B, Chunk, Dim).
+        # Then it post-processes it.
+        
+        # ACTUALLY, sticking to the plan: modify PolicyServer to contain the deque. 
+        # This function is a helper.
+        pass
+
     def GetActions(self, request, context):  # noqa: N802
         """Returns actions to the robot client. Actions are sent as a single
         chunk, containing multiple actions."""
@@ -235,7 +292,23 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
                 self._predicted_timesteps.add(obs.get_timestep())
 
             start_time = time.perf_counter()
-            action_chunk = self._predict_action_chunk(obs)
+            
+            # --- MODIFIED: Temporal Ensembling ---
+            # 1. Get the raw prediction (Chunk, Dim) - skipping post-processing for a moment?
+            # No, _predict_action_chunk does a lot (prepare, preprocess, infer, postprocess, time).
+            # To do ensembling cleanly, we should ideally ensemble the *postprocessed* tensors (in physical space),
+            # OR the raw tensors (in normalized space). Normalized is better usually.
+            # But _predict_action_chunk does everything in one go.
+            
+            # Let's modify _predict_action_chunk to handle ensembling internally or breakup the steps.
+            # Or better, we can just ensemble the *final* TimedAction values? 
+            # No, TimedAction is a list of objects.
+            
+            # Let's modify _predict_action_chunk to support ensembling.
+            action_chunk = self._predict_action_chunk(obs, use_ensemble=True)
+            
+            # --- END MODIFIED ---
+            
             inference_time = time.perf_counter() - start_time
 
             start_time = time.perf_counter()
@@ -331,9 +404,20 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         if chunk.ndim != 3:
             chunk = chunk.unsqueeze(0)  # adding batch dimension, now shape is (B, chunk_size, action_dim)
 
-        return chunk[:, : self.actions_per_chunk, :]
+        # IMPORTANT: For ensembling, we want the FULL horizon, not just the executed part.
+        # But existing code slices it: return chunk[:, : self.actions_per_chunk, :]
+        # We need to change this if we want to ensemble!
+        # If we return the full chunk here, the postprocessor will process the full chunk.
+        
+        # However, modifying _get_action_chunk might break other things if they expect only executed actions?
+        # But _predict_action_chunk uses it.
+        
+        # Let's return the FULL chunk here, and slice later after ensembling.
+        # The existing code did: return chunk[:, : self.actions_per_chunk, :]
+        # changing to:
+        return chunk 
 
-    def _predict_action_chunk(self, observation_t: TimedObservation) -> list[TimedAction]:
+    def _predict_action_chunk(self, observation_t: TimedObservation, use_ensemble: bool = False) -> list[TimedAction]:
         """Predict an action chunk based on an observation.
 
         Pipeline:
@@ -360,11 +444,94 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
         """3. Get action chunk"""
         start_inference = time.perf_counter()
-        action_tensor = self._get_action_chunk(observation)
+        
+        # Get FULL chunk (B, Horizon, Dim)
+        action_tensor_full = self._get_action_chunk(observation) 
+        
         inference_time = time.perf_counter() - start_inference
         self.logger.info(
-            f"Preprocessing and inference took {inference_time:.4f}s, action shape: {action_tensor.shape}"
+            f"Preprocessing and inference took {inference_time:.4f}s, action shape: {action_tensor_full.shape}"
         )
+    
+        # --- ENSEMBLING LOGIC ---
+        if use_ensemble and hasattr(self, 'action_buffer'):
+            # action_tensor_full is (B, Horizon, Dim). We assume B=1.
+            current_pred = action_tensor_full.detach().cpu() # Move to CPU for buffer storage if needed, or keep GPU
+            
+            # Store in buffer
+            self.action_buffer.append(current_pred)
+            
+            # Perform Weighted Average
+            # We need to align the overlapping predictions.
+            # Current time: t. 
+            # We want actions for [t, t + actions_per_chunk].
+            
+            # Buffer[-1] starts at t.
+            # Buffer[-2] starts at t - actions_per_chunk (approx, assuming fixed rate).
+            # Buffer[-3] starts at t - 2*actions_per_chunk.
+            
+            # Let k = actions_per_chunk.
+            # We want output for t+0, t+1, ... t+k-1.
+            
+            # For a given step 'i' in the output (0 <= i < k):
+            # It corresponds to time T = t + i.
+            
+            # From Buffer[-1] (start t): Index is i.
+            # From Buffer[-2] (start t-k): Index is k + i.
+            # From Buffer[-3] (start t-2k): Index is 2k + i.
+            
+            # General formula: For Buffer[-1-j], the index is j*k + i.
+            # We check if index < Horizon.
+            
+            k = self.actions_per_chunk
+            horizon = current_pred.shape[1]
+            
+            ensembled_actions = []
+            
+            # Iterate over the steps we want to EXECUTE (0 to k-1)
+            for i in range(k):
+                valid_preds = []
+                # Look back in buffer
+                for j in range(len(self.action_buffer)):
+                    # self.action_buffer is a deque.
+                    # self.action_buffer[-1] is latest (j=0 in formula above).
+                    # self.action_buffer[-2] is previous (j=1).
+                    # So we iterate backwards? Or just iterate the deque directly?
+                    # Let's iterate index `j` where 0 is latest.
+                    
+                    chunk_idx = len(self.action_buffer) - 1 - j # index in deque (0 is oldest, -1 is latest)
+                    chunk = self.action_buffer[chunk_idx] 
+                    
+                    # We want the prediction for time (t + i)
+                    # This chunk started at time (t - j*k)
+                    # So the time difference is (t+i) - (t-j*k) = i + j*k
+                    
+                    pred_idx = i + j * k
+                    
+                    if pred_idx < horizon:
+                         # Append tensor: (B, Dim) -> (Dim) if B=1
+                         valid_preds.append(chunk[0, pred_idx])
+                
+                # Average
+                if valid_preds:
+                    # Stack: (N, Dim) -> Mean -> (Dim)
+                    mean_action = torch.stack(valid_preds).mean(dim=0)
+                    ensembled_actions.append(mean_action)
+                else:
+                    # Should not happen if horizon >= k
+                    ensembled_actions.append(current_pred[0, i])
+            
+            # Stack back to (1, k, Dim)
+            # ensembled_actions is list of (Dim)
+            action_tensor = torch.stack(ensembled_actions).unsqueeze(0) # (1, k, Dim)
+            
+            # Ensure it's on the right device for post-processing ???
+            # Postprocessor usually handles device. But we detached to CPU potentially.
+            action_tensor = action_tensor.to(self.device)
+
+        else:
+             # No ensembling, just take the first k steps
+             action_tensor = action_tensor_full[:, : self.actions_per_chunk, :]
 
         """4. Apply postprocessor"""
         # Apply postprocessor (handles unnormalization and device movement)

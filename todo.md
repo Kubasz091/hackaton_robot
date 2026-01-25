@@ -1,0 +1,4 @@
+- [ test ensemblingu trajektorii ] 
+- [ próba przycięcia datasetu (zmiana długości sekwencji gdy operator sie opierdalal) ] 
+- [ sensowne porownanie 2 datasetow]
+- [ dotrenowanie acta na 1 datasecie ]

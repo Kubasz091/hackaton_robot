@@ -180,7 +180,6 @@ outputs/
 # Exclude .stl and .urdf files in yam visualization from being ignored
 !experimental/yam_visualization/**/*.stl
 !experimental/yam_visualization/**/*.urdf
-
 yam_wire
 yam_wire_merged
 yam_wire_2
