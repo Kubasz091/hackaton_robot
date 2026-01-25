@@ -61,6 +61,7 @@ from .helpers import (
     observations_similar,
     raw_observation_to_observation,
 )
+from .trajectory_ensembler import TrajectoryEnsembler
 
 
 class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
@@ -89,6 +90,7 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         self.policy = None
         self.preprocessor: PolicyProcessorPipeline[dict[str, Any], dict[str, Any]] | None = None
         self.postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction] | None = None
+        self.ensembler = TrajectoryEnsembler()
 
     @property
     def running(self):
@@ -106,6 +108,8 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
         with self._predicted_timesteps_lock:
             self._predicted_timesteps = set()
+            
+        self.ensembler = TrajectoryEnsembler()
 
     def Ready(self, request, context):  # noqa: N802
         client_id = context.peer()
@@ -380,6 +384,18 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         # Stack back to (B, chunk_size, action_dim), then remove batch dim
         action_tensor = torch.stack(processed_actions, dim=1).squeeze(0)
         self.logger.debug(f"Postprocessed action shape: {action_tensor.shape}")
+
+        # Apply trajectory ensembling
+        if self.config.use_trajectory_ensembling:
+            self.ensembler.update(action_tensor, observation_t.get_timestep())
+            ensembled_actions = self.ensembler.get_action_chunk(observation_t.get_timestep(), action_tensor.shape[0])
+            
+            if ensembled_actions is not None:
+                 action_tensor = ensembled_actions
+            else:
+                 self.logger.warning(f"Ensembling failed for timestep {observation_t.get_timestep()}, using raw actions.")
+        else:
+             self.logger.debug("Trajectory ensembling disabled.")
 
         """5. Convert to TimedAction list"""
         action_chunk = self._time_action_chunk(

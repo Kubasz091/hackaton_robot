@@ -182,4 +182,8 @@ outputs/
 !experimental/yam_visualization/**/*.urdf
 
 yam_wire
+yam_wire_merged
+yam_wire_2
 13-12-49_act
+060000
+my_diffusion_2

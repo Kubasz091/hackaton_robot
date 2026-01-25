@@ -63,6 +63,11 @@ class PolicyServerConfig:
     obs_queue_timeout: float = field(
         default=DEFAULT_OBS_QUEUE_TIMEOUT, metadata={"help": "Timeout for observation queue in seconds"}
     )
+    
+    # Ensembling configuration
+    use_trajectory_ensembling: bool = field(
+        default=True, metadata={"help": "Enable temporal trajectory ensembling"}
+    )
 
     def __post_init__(self):
         """Validate configuration after initialization."""
