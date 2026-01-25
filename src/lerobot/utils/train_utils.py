@@ -164,6 +164,7 @@ def load_training_state(
     step = load_training_step(training_state_dir)
     optimizer = load_optimizer_state(optimizer, training_state_dir)
     if scheduler is not None:
-        scheduler = load_scheduler_state(scheduler, training_state_dir)
+        if (training_state_dir / "scheduler_state.json").exists():
+            scheduler = load_scheduler_state(scheduler, training_state_dir)
 
     return step, optimizer, scheduler

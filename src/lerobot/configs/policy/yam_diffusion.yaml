@@ -1,0 +1,104 @@
+# Draccus configuration for YAM bimanual policy (Diffusion)
+
+dataset:
+  repo_id: /common/yam_wire_2
+  episodes: null
+  root: null
+  video_backend: torchcodec
+ 
+
+policy:
+  type: diffusion
+  push_to_hub: false
+  repo_id: lerobot/yam_diffusion_test
+  
+  # Input Features
+  input_features:
+    observation.images.top:
+      type: VISUAL
+      shape: [3, 480, 640]
+    observation.images.wrist_left:
+      type: VISUAL
+      shape: [3, 480, 640]
+    observation.images.wrist_right:
+      type: VISUAL
+      shape: [3, 480, 640]
+    observation.state:
+      type: STATE
+      shape: [14]
+
+  output_features:
+    action:
+      type: ACTION
+      shape: [14]
+
+  # Architecture structure
+  n_obs_steps: 2
+  horizon: 64
+  n_action_steps: 8
+  
+  # Vision backbone
+  vision_backbone: resnet18
+  pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1
+  crop_shape: [96, 96]
+  crop_is_random: true
+  use_group_norm: false
+
+  
+  # Noise Scheduler
+  noise_scheduler_type: DDIM
+  num_train_timesteps: 100
+  num_inference_steps: 10
+  
+  # Inference
+  clip_sample: true
+  
+  # Training Architecture
+  down_dims: [512, 1024, 2048]
+  kernel_size: 5
+  n_groups: 8
+  diffusion_step_embed_dim: 128
+  use_film_scale_modulation: true
+  
+  # EMA handled by policy if supported or root? 
+  # DiffusionConfig does NOT have use_ema.
+  # However, other LeRobot configs use it. 
+  # It seems `lerobot_train.py` handles EMA if `use_ema` is in `training` config... BUT `training` block is invalid.
+  # Checking `TrainPipelineConfig` again, it DOES NOT have `use_ema`.
+  # It seems `yam_diffusion.yaml` borrowed from ACT config which might have custom structure or older version?
+  # The `train_act_yam_bimanual.yaml` likely had `training:` block.
+  # If `TrainPipelineConfig` does not have `training` field, then ACT config would also fail if used with current code.
+  # Unless `parser.py` does magic.
+  # Assuming current codebase follows `TrainPipelineConfig` structure strictly.
+
+output_dir: outputs/train/diffusion_yam_bimanual_resnet_simple_v3
+job_name: diffusion_yam_bimanual_resnet_simple_v3
+
+# Flattened Training params
+steps: 4000 # 200000
+batch_size: 128
+num_workers: 4 # Standard for data loading (safe without heavy transforms)
+save_freq: 1000 # 5000
+log_freq: 25 # 100 - Increased frequency to see progress earlier
+eval_freq: 200 # 5000
+save_checkpoint: true
+
+# EMA removed as it is not supported in config
+
+
+optimizer:
+  type: adamw
+  lr: 1e-4
+  weight_decay: 1e-6
+
+scheduler:
+  type: cosine_decay_with_warmup
+  num_warmup_steps: 500
+  peak_lr: 1e-4
+  decay_lr: 1e-7 # Small final LR
+  num_decay_steps: 3500 # 199500
+
+eval:
+  n_episodes: 50
+  batch_size: 50
+  use_async_envs: false
